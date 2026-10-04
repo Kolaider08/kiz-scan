@@ -1,6 +1,6 @@
 // Работа без интернета: файлы приложения хранятся в кэше телефона.
 // При каждом открытии с интернетом берётся свежая версия с сайта.
-const CACHE = 'kiz-scan-v1';
+const CACHE = 'kiz-scan-v2';
 const SHELL = [
   './',
   './index.html',
@@ -50,7 +50,8 @@ self.addEventListener('fetch', event => {
   }
 
   // Библиотека распознавания: из кэша, чтобы работала без интернета.
-  if (url.hostname === 'cdn.jsdelivr.net' || url.hostname === 'fastly.jsdelivr.net') {
+  if (url.hostname === 'cdn.jsdelivr.net' || url.hostname === 'fastly.jsdelivr.net' ||
+      url.hostname === 'unpkg.com') {
     event.respondWith(
       caches.match(request).then(hit => hit || fetch(request).then(response => {
         if (response.ok) {

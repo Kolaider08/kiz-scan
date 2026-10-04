@@ -7,7 +7,8 @@
   const API_URL = String((window.KIZ_CONFIG && window.KIZ_CONFIG.API_URL) || '').trim();
   const ZXING_URLS = [
     'https://cdn.jsdelivr.net/npm/zxing-wasm@3.1.3/dist/es/reader/index.js',
-    'https://cdn.jsdelivr.net/npm/zxing-wasm@3.1.3/reader/+esm'
+    'https://cdn.jsdelivr.net/npm/zxing-wasm@3.1.3/reader/+esm',
+    'https://unpkg.com/zxing-wasm@3.1.3/dist/es/reader/index.js'
   ];
   const STORE = {
     key: 'kiz.key',
@@ -224,7 +225,8 @@
       el.pauseButton.hidden = false;
       state.paused = false;
       el.camera.classList.remove('paused');
-      showResult('', 'Сканируйте', 'Держите код в рамке 10–20 см от камеры.');
+      showResult('', 'Сканируйте', 'Держите код в рамке 10–20 см от камеры. Распознавание: ' +
+        state.detector.name + '.');
       requestWakeLock();
       if (!state.scanning) {
         state.scanning = true;
@@ -327,21 +329,31 @@
 
   /* ---------- Распознавание ---------- */
 
+  // Форматы, которые распознаём. Честный знак — только DataMatrix, остальные
+  // распознаём лишь для подсказки «это не тот код».
+  const NATIVE_FORMATS = ['data_matrix', 'qr_code', 'ean_13', 'ean_8', 'code_128', 'upc_a'];
+
   async function createDetector() {
     if ('BarcodeDetector' in window) {
       try {
-        const formats = await window.BarcodeDetector.getSupportedFormats();
-        if (formats.includes('data_matrix')) {
-          const native = new window.BarcodeDetector({formats: ['data_matrix']});
+        const supported = await window.BarcodeDetector.getSupportedFormats();
+        if (supported.includes('data_matrix')) {
+          const native = new window.BarcodeDetector({
+            formats: NATIVE_FORMATS.filter(format => supported.includes(format))
+          });
           return {
-            name: 'native',
-            detect: async video => (await native.detect(video)).map(code => code.rawValue)
+            name: 'встроенное в телефон',
+            detect: async video => (await native.detect(video)).map(code => ({
+              text: code.rawValue,
+              matrix: code.format === 'data_matrix',
+              format: code.format
+            }))
           };
         }
       } catch (e) { /* переходим на запасной вариант */ }
     }
 
-    // Запасной вариант (iPhone, старые телефоны): библиотека ZXing.
+    // Запасной вариант (iPhone, телефоны без встроенного распознавания): ZXing.
     let module = null;
     for (const url of ZXING_URLS) {
       try { module = await import(url); break; } catch (e) { /* следующий адрес */ }
@@ -354,24 +366,26 @@
     const context = canvas.getContext('2d', {willReadFrequently: true});
 
     return {
-      name: 'zxing',
+      name: 'ZXing',
       detect: async video => {
         const vw = video.videoWidth;
         const vh = video.videoHeight;
         if (!vw || !vh) return [];
         // Берём центральный квадрат кадра — там рамка.
         const side = Math.round(Math.min(vw, vh) * 0.75);
-        const size = Math.min(side, 720);
+        const size = Math.min(side, 800);
         canvas.width = size;
         canvas.height = size;
         context.drawImage(video, (vw - side) / 2, (vh - side) / 2, side, side, 0, 0, size, size);
         const image = context.getImageData(0, 0, size, size);
-        const results = await read(image, {
-          formats: ['DataMatrix'],
-          tryHarder: true,
-          maxNumberOfSymbols: 1
-        });
-        return results.filter(r => r.isValid !== false && r.text).map(r => r.text);
+        const results = await read(image, {tryHarder: true, maxNumberOfSymbols: 1});
+        return results
+          .filter(r => r.isValid !== false && r.text)
+          .map(r => ({
+            text: r.text,
+            matrix: /data\s*matrix/i.test(String(r.format || '')),
+            format: String(r.format || '')
+          }));
       }
     };
   }
@@ -381,11 +395,31 @@
       if (!state.paused && state.stream && el.video.readyState >= 2 && !document.hidden) {
         try {
           const codes = await state.detector.detect(el.video);
-          codes.forEach(onCode);
+          codes.forEach(onDetected);
         } catch (e) { /* пропускаем кадр */ }
       }
       await sleep(SCAN_INTERVAL);
     }
+  }
+
+  const FORMAT_NAMES = {
+    qr_code: 'QR-код', ean_13: 'штрихкод EAN-13', ean_8: 'штрихкод EAN-8',
+    code_128: 'штрихкод Code 128', upc_a: 'штрихкод UPC'
+  };
+  let lastWrongAt = 0;
+
+  function onDetected(code) {
+    if (code.matrix) {
+      onCode(code.text);
+      return;
+    }
+    // Камера работает, но в кадре не DataMatrix — подсказываем, не отправляем.
+    const now = Date.now();
+    if (now - lastWrongAt < 2500) return;
+    lastWrongAt = now;
+    const name = FORMAT_NAMES[code.format] || (/qr/i.test(code.format) ? 'QR-код' : 'штрихкод');
+    feedback('dup', true);
+    showResult('warn', 'Это ' + name, 'Камера видит код, но для Честного знака нужен квадратный DataMatrix.');
   }
 
   function sleep(ms) {
