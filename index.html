@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Приёмка КИЗ</title>
+  <meta name="theme-color" content="#1f4e79">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <style>
+    :root {
+      --bg: #0f1720;
+      --panel: #17212b;
+      --line: #2a3744;
+      --ink: #eef3f6;
+      --muted: #93a3b0;
+      --accent: #378add;
+      --ok: #3fb950;
+      --warn: #f0a62a;
+      --bad: #f2564c;
+      --idle: #378add;
+    }
+
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Roboto, "Segoe UI", Arial, sans-serif;
+    }
+
+    body {
+      display: flex;
+      flex-direction: column;
+      padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
+    }
+
+    [hidden] { display: none !important; }
+
+    /* ---------- Шапка ---------- */
+    header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 16px;
+      background: #1f4e79;
+    }
+
+    header img { width: 30px; height: 30px; border-radius: 7px; }
+
+    header .title { flex: 1; min-width: 0; }
+    header .app { font-size: 16px; font-weight: 700; }
+    header .who {
+      font-size: 13px;
+      opacity: .85;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .net {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .net::before {
+      content: "";
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--ok);
+    }
+
+    .net.off::before { background: var(--bad); }
+
+    /* ---------- Камера ---------- */
+    .camera {
+      position: relative;
+      height: 46vh;
+      min-height: 240px;
+      background: #000;
+      overflow: hidden;
+      border-bottom: 6px solid var(--idle);
+      transition: border-color .15s;
+    }
+
+    .camera video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+
+    .frame {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 62vmin;
+      height: 62vmin;
+      max-width: 300px;
+      max-height: 300px;
+      transform: translate(-50%, -50%);
+      pointer-events: none;
+    }
+
+    .frame i {
+      position: absolute;
+      width: 42px;
+      height: 42px;
+      border: 5px solid #fff;
+      border-radius: 6px;
+    }
+
+    .frame i:nth-child(1) { left: 0; top: 0; border-right: 0; border-bottom: 0; }
+    .frame i:nth-child(2) { right: 0; top: 0; border-left: 0; border-bottom: 0; }
+    .frame i:nth-child(3) { left: 0; bottom: 0; border-right: 0; border-top: 0; }
+    .frame i:nth-child(4) { right: 0; bottom: 0; border-left: 0; border-top: 0; }
+
+    .laser {
+      position: absolute;
+      left: 8%;
+      right: 8%;
+      top: 50%;
+      height: 3px;
+      border-radius: 2px;
+      background: #ff6a45;
+      box-shadow: 0 0 12px 2px rgba(255, 106, 69, .7);
+      animation: sweep 1.8s ease-in-out infinite alternate;
+    }
+
+    @keyframes sweep {
+      from { top: 12%; }
+      to { top: 88%; }
+    }
+
+    .flash {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .35s;
+    }
+
+    .camera.ok   { border-color: var(--ok); }
+    .camera.warn { border-color: var(--warn); }
+    .camera.bad  { border-color: var(--bad); }
+    .camera.ok .flash   { background: rgba(63, 185, 80, .35); }
+    .camera.warn .flash { background: rgba(240, 166, 42, .35); }
+    .camera.bad .flash  { background: rgba(242, 86, 76, .4); }
+    .camera.pulse .flash { opacity: 1; transition: none; }
+
+    .camera.paused .laser { display: none; }
+
+    .overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      padding: 24px;
+      text-align: center;
+      background: rgba(15, 23, 32, .88);
+      font-size: 15px;
+      line-height: 1.45;
+      color: var(--muted);
+    }
+
+    .cam-tools {
+      position: absolute;
+      right: 10px;
+      bottom: 10px;
+      display: flex;
+      gap: 8px;
+    }
+
+    .round {
+      width: 48px;
+      height: 48px;
+      border: 0;
+      border-radius: 50%;
+      background: rgba(0, 0, 0, .55);
+      color: #fff;
+      font-size: 22px;
+      cursor: pointer;
+    }
+
+    .round.on { background: #ffd23f; color: #000; }
+
+    /* ---------- Результат ---------- */
+    main {
+      flex: 1;
+      overflow-y: auto;
+      padding: 14px 16px 24px;
+    }
+
+    .result {
+      padding: 14px 16px;
+      border-left: 8px solid var(--idle);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+
+    .result h1 {
+      margin: 0 0 4px;
+      font-size: 26px;
+      line-height: 1.15;
+    }
+
+    .result p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.4;
+      overflow-wrap: anywhere;
+    }
+
+    .result.ok   { border-color: var(--ok); }
+    .result.warn { border-color: var(--warn); }
+    .result.bad  { border-color: var(--bad); }
+    .result.ok h1   { color: var(--ok); }
+    .result.warn h1 { color: var(--warn); }
+    .result.bad h1  { color: var(--bad); }
+
+    .counters {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+      margin: 12px 0;
+    }
+
+    .counters div {
+      padding: 8px 4px;
+      border-radius: 8px;
+      background: var(--panel);
+      text-align: center;
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .counters b {
+      display: block;
+      font-size: 22px;
+      color: var(--ink);
+    }
+
+    .counters .c-ok b { color: var(--ok); }
+    .counters .c-dup b { color: var(--warn); }
+    .counters .c-bad b { color: var(--bad); }
+
+    .manual {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    input {
+      flex: 1;
+      min-width: 0;
+      padding: 12px;
+      border: 2px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      color: var(--ink);
+      font-size: 16px;
+    }
+
+    input:focus { outline: none; border-color: var(--accent); }
+
+    .btn {
+      padding: 12px 16px;
+      border: 0;
+      border-radius: 8px;
+      background: var(--accent);
+      color: #fff;
+      font-size: 15px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .btn.big { padding: 16px 28px; font-size: 18px; }
+    .btn.ghost { background: transparent; border: 2px solid var(--line); color: var(--ink); }
+
+    h2 {
+      margin: 6px 0 8px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+    }
+
+    ol {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    li {
+      display: grid;
+      grid-template-columns: 52px 1fr;
+      gap: 10px;
+      padding: 9px 0;
+      border-bottom: 1px solid var(--line);
+      font-size: 13px;
+    }
+
+    li .time { color: var(--muted); }
+    li .code { color: var(--muted); overflow-wrap: anywhere; }
+    li .msg { font-weight: 600; }
+    li.ok .msg { color: var(--ok); }
+    li.warn .msg { color: var(--warn); }
+    li.bad .msg { color: var(--bad); }
+    li.wait .msg { color: var(--muted); }
+
+    /* ---------- Экран входа ---------- */
+    .gate {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 16px;
+      padding: 24px;
+      max-width: 520px;
+      margin: 0 auto;
+      width: 100%;
+    }
+
+    .gate img { width: 96px; height: 96px; border-radius: 22px; align-self: center; }
+    .gate h1 { margin: 0; text-align: center; font-size: 24px; }
+    .gate p { margin: 0; color: var(--muted); line-height: 1.5; text-align: center; }
+    .gate .error { color: var(--bad); text-align: center; min-height: 20px; }
+
+    @media (prefers-reduced-motion: reduce) {
+      .laser { animation: none; }
+    }
+  </style>
+</head>
+<body>
+  <!-- Вход: нет ключа или ключ отключён -->
+  <section class="gate" id="gate" hidden>
+    <img src="icons/icon-192.png" alt="">
+    <h1>Приёмка КИЗ</h1>
+    <p id="gateText">Откройте приложение по личной ссылке, которую прислал руководитель.
+      Или вставьте эту ссылку сюда.</p>
+    <input id="gateInput" placeholder="Вставьте ссылку" autocomplete="off">
+    <button class="btn big" id="gateButton" type="button">Войти</button>
+    <div class="error" id="gateError" role="alert"></div>
+  </section>
+
+  <!-- Основной экран -->
+  <div id="app" hidden style="display:flex;flex-direction:column;flex:1;min-height:0">
+    <header>
+      <img src="icons/icon-192.png" alt="">
+      <div class="title">
+        <div class="app">Приёмка КИЗ</div>
+        <div class="who" id="who"></div>
+      </div>
+      <div class="net" id="net">онлайн</div>
+    </header>
+
+    <div class="camera paused" id="camera">
+      <video id="video" playsinline muted></video>
+      <div class="frame"><i></i><i></i><i></i><i></i><div class="laser"></div></div>
+      <div class="flash"></div>
+
+      <div class="overlay" id="startOverlay">
+        <div>Наведите камеру на код DataMatrix.<br>Каждый код сохраняется сам, со звуком.</div>
+        <button class="btn big" id="startButton" type="button">Начать сканирование</button>
+      </div>
+
+      <div class="cam-tools">
+        <button class="round" id="torchButton" type="button" title="Фонарик" aria-label="Фонарик" hidden>🔦</button>
+        <button class="round" id="pauseButton" type="button" title="Пауза" aria-label="Пауза" hidden>⏸</button>
+      </div>
+    </div>
+
+    <main>
+      <div class="result" id="result" role="status" aria-live="polite">
+        <h1 id="resultTitle">Готово к сканированию</h1>
+        <p id="resultText">Нажмите «Начать сканирование».</p>
+      </div>
+
+      <div class="counters">
+        <div class="c-ok">Добавлено<b id="cAdded">0</b></div>
+        <div class="c-dup">Повторы<b id="cDup">0</b></div>
+        <div class="c-bad">Ошибки<b id="cBad">0</b></div>
+        <div>Очередь<b id="cQueue">0</b></div>
+      </div>
+
+      <div class="manual" id="nameRow" hidden>
+        <input id="nameInput" placeholder="Ваше имя" autocomplete="name">
+      </div>
+
+      <div class="manual">
+        <input id="manualInput" placeholder="Ввод вручную или сканером" autocomplete="off"
+               autocapitalize="off" spellcheck="false" enterkeyhint="send">
+        <button class="btn" id="manualButton" type="button">ОК</button>
+      </div>
+
+      <h2>Последние сканы</h2>
+      <ol id="history"></ol>
+    </main>
+  </div>
+
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
