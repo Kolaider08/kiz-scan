@@ -16,7 +16,8 @@
     typedName: 'kiz.typedName',
     queue: 'kiz.queue',
     history: 'kiz.history',
-    mode: 'kiz.mode'
+    mode: 'kiz.mode',
+    camera: 'kiz.camera'
   };
   const SCAN_INTERVAL = 140;     // мс между попытками распознать кадр
   const SAME_CODE_PAUSE = 2500;  // мс: тот же код в кадре не обрабатывается повторно
@@ -34,10 +35,15 @@
     nameRow: $('nameRow'), nameInput: $('nameInput'),
     manualInput: $('manualInput'), manualButton: $('manualButton'),
     history: $('history'),
-    modeCamera: $('modeCamera'), modeScanner: $('modeScanner')
+    modeCamera: $('modeCamera'), modeScanner: $('modeScanner'),
+    logoutButton: $('logoutButton'),
+    switchButton: $('switchButton'), zoomButton: $('zoomButton')
   };
 
   const state = {
+    cameras: [],
+    zoomLevels: [],
+    zoomIndex: 0,
     key: '',
     personal: true,
     stream: null,
@@ -98,6 +104,9 @@
     el.startButton.addEventListener('click', startScanning);
     el.pauseButton.addEventListener('click', togglePause);
     el.torchButton.addEventListener('click', toggleTorch);
+    el.switchButton.addEventListener('click', switchCamera);
+    el.zoomButton.addEventListener('click', cycleZoom);
+    el.video.addEventListener('click', focusAt);
     el.manualButton.addEventListener('click', submitManual);
     el.manualInput.addEventListener('keydown', e => {
       if (e.key === 'Enter' || e.key === 'Tab') {
@@ -105,6 +114,7 @@
         submitManual();
       }
     });
+    el.logoutButton.addEventListener('click', onLogoutClick);
     el.modeCamera.addEventListener('click', () => setMode('camera'));
     el.modeScanner.addEventListener('click', () => setMode('scanner'));
     el.manualInput.addEventListener('blur', keepScannerFocus);
@@ -192,6 +202,40 @@
     el.gateError.textContent = error || '';
   }
 
+  /* ---------- Выход ---------- */
+
+  function onLogoutClick() {
+    const pending = queue.length;
+    const question = pending
+      ? 'Не отправлено сканов: ' + pending + '. При выходе они будут удалены. Всё равно выйти?'
+      : 'Выйти? Для входа понадобится ссылка от руководителя.';
+
+    if (window.confirm(question)) {
+      logout('Вы вышли. Вставьте ссылку, чтобы войти снова.');
+    }
+  }
+
+  // Полный выход: ключ, имя, очередь и история этого сотрудника стираются,
+  // чтобы его сканы не ушли под чужим именем.
+  function logout(message) {
+    state.scanning = false;
+    stopCamera();
+    state.key = '';
+    state.seen.clear();
+    state.counts = {added: 0, dup: 0, bad: 0};
+    queue = [];
+    recent = [];
+    save(STORE.key, '');
+    save(STORE.name, null);
+    save(STORE.queue, queue);
+    save(STORE.history, recent);
+    el.startOverlay.hidden = false;
+    el.gateInput.value = '';
+    el.gateInput.hidden = false;
+    el.gateButton.hidden = false;
+    showGate(message, '');
+  }
+
   function onGateSubmit() {
     const value = el.gateInput.value.trim();
     const match = value.match(/[?&](?:k|scan)=([A-Za-z0-9]+)/);
@@ -222,10 +266,7 @@
       const answer = await api({api: 'hello'});
       if (!answer.ok) {
         if (answer.denied) {
-          save(STORE.key, '');
-          state.key = '';
-          stopCamera();
-          showGate('Ваша ссылка отключена или неверна. Попросите у руководителя новую.', '');
+          logout('Ваша ссылка отключена или неверна. Попросите у руководителя новую и вставьте её сюда.');
         } else {
           showResult('bad', 'Ошибка', answer.error || 'Не удалось проверить доступ.');
         }
@@ -282,7 +323,8 @@
       el.pauseButton.hidden = false;
       state.paused = false;
       el.camera.classList.remove('paused');
-      showResult('', 'Сканируйте', 'Держите код в рамке 10–20 см от камеры. Распознавание: ' +
+      showResult('', 'Сканируйте', 'Держите код в рамке 15–25 см от камеры. ' +
+        'Нечётко — нажмите на изображение или 🔄 (другая камера). Распознавание: ' +
         state.detector.name + '.');
       requestWakeLock();
       if (!state.scanning) {
@@ -307,29 +349,151 @@
     return (error && error.message) || String(error);
   }
 
-  async function startCamera() {
-    stopCamera();
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: false,
-      video: {
-        facingMode: {ideal: 'environment'},
-        width: {ideal: 1920},
-        height: {ideal: 1080}
-      }
-    });
+  /* Выбор камеры. У телефонов с несколькими задними камерами (Samsung S10 и др.)
+   * браузер может открыть широкоугольную камеру без автофокуса — мелкий
+   * DataMatrix она не видит. Ищем заднюю камеру с автофокусом и запоминаем. */
+
+  function openStream(deviceId) {
+    const video = {width: {ideal: 1920}, height: {ideal: 1080}};
+    if (deviceId) video.deviceId = {exact: deviceId};
+    else video.facingMode = {ideal: 'environment'};
+    return navigator.mediaDevices.getUserMedia({audio: false, video});
+  }
+
+  function attachStream(stream) {
     state.stream = stream;
     state.track = stream.getVideoTracks()[0];
     el.video.srcObject = stream;
-    await el.video.play();
+  }
 
-    // Непрерывная автофокусировка, если камера умеет.
+  function currentDeviceId() {
+    try { return state.track.getSettings().deviceId || ''; } catch (e) { return ''; }
+  }
+
+  function trackCaps() {
+    try { return state.track && state.track.getCapabilities ? state.track.getCapabilities() : {}; }
+    catch (e) { return {}; }
+  }
+
+  function hasAutofocus() {
+    const caps = trackCaps();
+    return Boolean(caps.focusMode && caps.focusMode.includes('continuous'));
+  }
+
+  async function listBackCameras() {
+    const devices = (await navigator.mediaDevices.enumerateDevices())
+      .filter(device => device.kind === 'videoinput');
+    const back = devices.filter(device => /back|rear|environment|задн/i.test(device.label));
+    const list = back.length ? back : devices;
+    // Android: «camera2 0, facing back» — основная камера, бо́льшие номера — доп. объективы.
+    const number = device => {
+      const match = device.label.match(/(\d+)\s*,/) || device.label.match(/(\d+)/);
+      return match ? Number(match[1]) : 99;
+    };
+    return list.slice().sort((x, y) => number(x) - number(y));
+  }
+
+  async function startCamera(forcedId) {
+    stopCamera();
+    const savedId = forcedId || load(STORE.camera, '');
+
     try {
-      const caps = state.track.getCapabilities ? state.track.getCapabilities() : {};
+      attachStream(await openStream(savedId));
+    } catch (error) {
+      if (!savedId) throw error;
+      save(STORE.camera, '');            // сохранённая камера пропала — берём обычную
+      attachStream(await openStream(''));
+    }
+
+    try { state.cameras = await listBackCameras(); } catch (e) { state.cameras = []; }
+
+    // Первый запуск: перебираем задние камеры, пока не найдём с автофокусом.
+    if (!savedId && state.cameras.length > 1 && !hasAutofocus()) {
+      for (const camera of state.cameras) {
+        if (camera.deviceId === currentDeviceId()) continue;
+        stopCamera();
+        try {
+          attachStream(await openStream(camera.deviceId));
+          if (hasAutofocus()) break;
+        } catch (e) { /* следующая */ }
+      }
+      if (!state.stream) attachStream(await openStream(''));
+    }
+
+    save(STORE.camera, currentDeviceId());
+    await el.video.play();
+    await applyCameraFeatures();
+  }
+
+  async function applyCameraFeatures() {
+    const caps = trackCaps();
+    try {
       if (caps.focusMode && caps.focusMode.includes('continuous')) {
         await state.track.applyConstraints({advanced: [{focusMode: 'continuous'}]});
       }
-      el.torchButton.hidden = !caps.torch;
     } catch (e) { /* не критично */ }
+
+    el.torchButton.hidden = !caps.torch;
+    el.switchButton.hidden = !(state.cameras && state.cameras.length > 1);
+
+    state.zoomLevels = [];
+    if (caps.zoom && caps.zoom.max > caps.zoom.min) {
+      const min = caps.zoom.min || 1;
+      state.zoomLevels = [1, 1.5, 2, 3]
+        .map(k => Math.round(min * k * 10) / 10)
+        .filter(z => z <= caps.zoom.max);
+    }
+    state.zoomIndex = 0;
+    el.zoomButton.hidden = state.zoomLevels.length < 2;
+    el.zoomButton.textContent = '1×';
+  }
+
+  async function switchCamera() {
+    if (!state.cameras || state.cameras.length < 2) return;
+    const index = state.cameras.findIndex(camera => camera.deviceId === currentDeviceId());
+    const next = state.cameras[(index + 1) % state.cameras.length];
+    try {
+      await startCamera(next.deviceId);
+      const position = state.cameras.findIndex(camera => camera.deviceId === currentDeviceId()) + 1;
+      showResult('', 'Камера ' + position + ' из ' + state.cameras.length,
+        (hasAutofocus() ? 'С автофокусом. ' : 'Без автофокуса — лучше выбрать другую. ') +
+        'Выбор запомнится.');
+    } catch (error) {
+      showResult('bad', 'Камера недоступна', cameraErrorText(error));
+    }
+  }
+
+  async function cycleZoom() {
+    if (!state.track || state.zoomLevels.length < 2) return;
+    state.zoomIndex = (state.zoomIndex + 1) % state.zoomLevels.length;
+    const zoom = state.zoomLevels[state.zoomIndex];
+    try {
+      await state.track.applyConstraints({advanced: [{zoom}]});
+      el.zoomButton.textContent = (zoom / state.zoomLevels[0]).toFixed(1).replace('.0', '') + '×';
+    } catch (e) { /* зум не поддерживается */ }
+  }
+
+  // Нажатие на изображение — навести фокус в эту точку.
+  async function focusAt(event) {
+    if (!state.track) return;
+    const caps = trackCaps();
+    const rect = el.video.getBoundingClientRect();
+    const point = {
+      x: (event.clientX - rect.left) / rect.width,
+      y: (event.clientY - rect.top) / rect.height
+    };
+    try {
+      const constraints = {pointsOfInterest: [point]};
+      if (caps.focusMode && caps.focusMode.includes('single-shot')) {
+        constraints.focusMode = 'single-shot';
+      }
+      await state.track.applyConstraints({advanced: [constraints]});
+      setTimeout(() => {
+        if (state.track && caps.focusMode && caps.focusMode.includes('continuous')) {
+          state.track.applyConstraints({advanced: [{focusMode: 'continuous'}]}).catch(() => {});
+        }
+      }, 1500);
+    } catch (e) { /* фокус по точке не поддерживается */ }
   }
 
   function stopCamera() {
@@ -368,6 +532,8 @@
       el.startOverlay.hidden = false;
       el.pauseButton.hidden = true;
       el.torchButton.hidden = true;
+      el.switchButton.hidden = true;
+      el.zoomButton.hidden = true;
     } else {
       if (state.wakeLock === null && state.scanning) requestWakeLock();
       pump();
@@ -596,10 +762,10 @@
         }
 
         if (!answer.ok && answer.denied) {
-          state.scanning = false;
-          stopCamera();
-          save(STORE.key, '');
-          showGate('Ваша ссылка отключена. Попросите у руководителя новую.', '');
+          const lost = queue.length;
+          logout('Ваша ссылка отключена руководителем.' +
+            (lost ? ' Не отправлено сканов: ' + lost + ' — они не сохранены.' : '') +
+            ' Попросите новую ссылку и вставьте её сюда.');
           return;
         }
 

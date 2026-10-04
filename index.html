@@ -69,6 +69,17 @@
       white-space: nowrap;
     }
 
+    .logout {
+      margin-left: 4px;
+      padding: 6px 10px;
+      border: 1px solid rgba(255, 255, 255, .45);
+      border-radius: 6px;
+      background: transparent;
+      color: #fff;
+      font-size: 13px;
+      cursor: pointer;
+    }
+
     .net::before {
       content: "";
       width: 9px;
@@ -193,6 +204,7 @@
     }
 
     .round.on { background: #ffd23f; color: #000; }
+    #zoomButton { font-size: 16px; font-weight: 700; }
 
     /* ---------- Результат ---------- */
     main {
@@ -421,6 +433,7 @@
         <div class="who" id="who"></div>
       </div>
       <div class="net" id="net">онлайн</div>
+      <button class="logout" id="logoutButton" type="button" title="Выйти и войти по другой ссылке">Выйти</button>
     </header>
 
     <nav class="modes" aria-label="Способ сканирования">
@@ -439,6 +452,8 @@
       </div>
 
       <div class="cam-tools">
+        <button class="round" id="zoomButton" type="button" title="Приближение" aria-label="Приближение" hidden>1×</button>
+        <button class="round" id="switchButton" type="button" title="Другая камера" aria-label="Другая камера" hidden>🔄</button>
         <button class="round" id="torchButton" type="button" title="Фонарик" aria-label="Фонарик" hidden>🔦</button>
         <button class="round" id="pauseButton" type="button" title="Пауза" aria-label="Пауза" hidden>⏸</button>
       </div>
