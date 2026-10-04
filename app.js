@@ -37,7 +37,8 @@
     history: $('history'),
     modeCamera: $('modeCamera'), modeScanner: $('modeScanner'),
     logoutButton: $('logoutButton'),
-    switchButton: $('switchButton'), zoomButton: $('zoomButton')
+    switchButton: $('switchButton'), zoomButton: $('zoomButton'),
+    photoButton: $('photoButton')
   };
 
   const state = {
@@ -106,6 +107,7 @@
     el.torchButton.addEventListener('click', toggleTorch);
     el.switchButton.addEventListener('click', switchCamera);
     el.zoomButton.addEventListener('click', cycleZoom);
+    el.photoButton.addEventListener('click', takePhotoScan);
     el.video.addEventListener('click', focusAt);
     el.manualButton.addEventListener('click', submitManual);
     el.manualInput.addEventListener('keydown', e => {
@@ -323,9 +325,10 @@
       el.pauseButton.hidden = false;
       state.paused = false;
       el.camera.classList.remove('paused');
-      showResult('', 'Сканируйте', 'Держите код в рамке 15–25 см от камеры. ' +
-        'Нечётко — нажмите на изображение или 🔄 (другая камера). Распознавание: ' +
-        state.detector.name + '.');
+      const settings = state.track && state.track.getSettings ? state.track.getSettings() : {};
+      showResult('', 'Сканируйте', 'Держите код в рамке 15–25 см. Не читается — ' +
+        'коснитесь экрана для фокуса или нажмите 📸. Распознавание: ' + state.detector.name +
+        (settings.width ? ', камера ' + settings.width + '×' + settings.height : '') + '.');
       requestWakeLock();
       if (!state.scanning) {
         state.scanning = true;
@@ -434,6 +437,7 @@
     } catch (e) { /* не критично */ }
 
     el.torchButton.hidden = !caps.torch;
+    el.photoButton.hidden = false;
     el.switchButton.hidden = !(state.cameras && state.cameras.length > 1);
 
     state.zoomLevels = [];
@@ -534,6 +538,7 @@
       el.torchButton.hidden = true;
       el.switchButton.hidden = true;
       el.zoomButton.hidden = true;
+      el.photoButton.hidden = true;
     } else {
       if (state.wakeLock === null && state.scanning) requestWakeLock();
       pump();
@@ -556,61 +561,166 @@
   // распознаём лишь для подсказки «это не тот код».
   const NATIVE_FORMATS = ['data_matrix', 'qr_code', 'ean_13', 'ean_8', 'code_128', 'upc_a'];
 
+  async function loadZxing() {
+    for (const url of ZXING_URLS) {
+      try {
+        const module = await import(url);
+        const read = module.readBarcodes || module.readBarcodesFromImageData;
+        if (read) return read;
+      } catch (e) { /* следующий адрес */ }
+    }
+    return null;
+  }
+
+  /* Два распознавателя сразу: встроенный в телефон (быстрый) и ZXing (лучше
+   * читает плотные DataMatrix Честного знака). Оба получают центральную часть
+   * кадра в полном разрешении — так мелкий код не теряется при уменьшении. */
   async function createDetector() {
+    let native = null;
     if ('BarcodeDetector' in window) {
       try {
         const supported = await window.BarcodeDetector.getSupportedFormats();
         if (supported.includes('data_matrix')) {
-          const native = new window.BarcodeDetector({
+          native = new window.BarcodeDetector({
             formats: NATIVE_FORMATS.filter(format => supported.includes(format))
           });
-          return {
-            name: 'встроенное в телефон',
-            detect: async video => (await native.detect(video)).map(code => ({
-              text: code.rawValue,
-              matrix: code.format === 'data_matrix',
-              format: code.format
-            }))
-          };
         }
-      } catch (e) { /* переходим на запасной вариант */ }
+      } catch (e) { native = null; }
     }
 
-    // Запасной вариант (iPhone, телефоны без встроенного распознавания): ZXing.
-    let module = null;
-    for (const url of ZXING_URLS) {
-      try { module = await import(url); break; } catch (e) { /* следующий адрес */ }
+    let zxRead = null;
+    const zxReady = loadZxing().then(read => { zxRead = read; });
+    if (!native) {
+      await zxReady;
+      if (!zxRead) {
+        throw new Error('Не удалось загрузить распознавание кодов. Проверьте интернет и откройте приложение снова.');
+      }
     }
-    const read = module && (module.readBarcodes || module.readBarcodesFromImageData);
-    if (!read) {
-      throw new Error('Не удалось загрузить распознавание кодов. Проверьте интернет и откройте приложение снова.');
+
+    const crop = document.createElement('canvas');
+    const cropContext = crop.getContext('2d', {willReadFrequently: true});
+    const work = document.createElement('canvas');
+    const workContext = work.getContext('2d', {willReadFrequently: true});
+    let tick = 0;
+
+    // Центральная часть изображения в исходном разрешении (без уменьшения).
+    function cropCenter(source, width, height, fraction, maxSize) {
+      const side = Math.round(Math.min(width, height) * fraction);
+      const size = Math.min(side, maxSize);
+      crop.width = size;
+      crop.height = size;
+      cropContext.drawImage(source, (width - side) / 2, (height - side) / 2, side, side, 0, 0, size, size);
+      return crop;
     }
-    const canvas = document.createElement('canvas');
-    const context = canvas.getContext('2d', {willReadFrequently: true});
+
+    const fromNative = codes => codes.map(code => ({
+      text: code.rawValue,
+      matrix: code.format === 'data_matrix',
+      format: code.format
+    }));
+
+    async function zxDecode(canvas, maxSize) {
+      let target = canvas;
+      if (canvas.width > maxSize) {
+        const k = maxSize / canvas.width;
+        work.width = Math.round(canvas.width * k);
+        work.height = Math.round(canvas.height * k);
+        workContext.drawImage(canvas, 0, 0, work.width, work.height);
+        target = work;
+      }
+      const context = target === work ? workContext : cropContext;
+      const image = context.getImageData(0, 0, target.width, target.height);
+      const results = await zxRead(image, {tryHarder: true, maxNumberOfSymbols: 1});
+      return results
+        .filter(r => r.isValid !== false && r.text)
+        .map(r => ({
+          text: r.text,
+          matrix: /data\s*matrix/i.test(String(r.format || '')),
+          format: String(r.format || '')
+        }));
+    }
+
+    async function detectIn(source, width, height, full) {
+      if (native) {
+        const found = fromNative(await native.detect(cropCenter(source, width, height, 0.6, 1600)));
+        if (found.length) return found;
+        if (full) {
+          const whole = fromNative(await native.detect(source));
+          if (whole.length) return whole;
+        }
+      }
+      if (zxRead) {
+        const found = await zxDecode(cropCenter(source, width, height, 0.6, 1600), 1100);
+        if (found.length || !full) return found;
+        return zxDecode(cropCenter(source, width, height, 0.9, 2400), 1400);
+      }
+      return [];
+    }
 
     return {
-      name: 'ZXing',
+      get name() {
+        return [native && 'встроенное', zxRead && 'ZXing'].filter(Boolean).join(' + ');
+      },
+
+      // Поток с камеры: каждый кадр — встроенное по центру, через кадр — ZXing.
       detect: async video => {
-        const vw = video.videoWidth;
-        const vh = video.videoHeight;
-        if (!vw || !vh) return [];
-        // Берём центральный квадрат кадра — там рамка.
-        const side = Math.round(Math.min(vw, vh) * 0.75);
-        const size = Math.min(side, 800);
-        canvas.width = size;
-        canvas.height = size;
-        context.drawImage(video, (vw - side) / 2, (vh - side) / 2, side, side, 0, 0, size, size);
-        const image = context.getImageData(0, 0, size, size);
-        const results = await read(image, {tryHarder: true, maxNumberOfSymbols: 1});
-        return results
-          .filter(r => r.isValid !== false && r.text)
-          .map(r => ({
-            text: r.text,
-            matrix: /data\s*matrix/i.test(String(r.format || '')),
-            format: String(r.format || '')
-          }));
-      }
+        tick++;
+        const width = video.videoWidth;
+        const height = video.videoHeight;
+        if (!width || !height) return [];
+
+        if (native) {
+          const found = fromNative(await native.detect(cropCenter(video, width, height, 0.6, 1600)));
+          if (found.length) return found;
+          if (tick % 5 === 0) {
+            const whole = fromNative(await native.detect(video));
+            if (whole.length) return whole;
+          }
+        }
+        if (zxRead && (!native || tick % 2 === 0)) {
+          return zxDecode(cropCenter(video, width, height, 0.6, 1600), 1100);
+        }
+        return [];
+      },
+
+      // Снимок в полном разрешении камеры (кнопка 📸).
+      detectImage: (image, width, height) => detectIn(image, width, height, true)
     };
+  }
+
+  // Кнопка 📸: фото в полном разрешении камеры — как в обычном приложении «Камера».
+  async function takePhotoScan() {
+    if (!state.track || !state.detector) return;
+    el.photoButton.disabled = true;
+    showResult('', 'Снимаю…', 'Держите телефон неподвижно.');
+    try {
+      let image;
+      let width;
+      let height;
+      if ('ImageCapture' in window) {
+        const blob = await new window.ImageCapture(state.track).takePhoto();
+        image = await createImageBitmap(blob);
+        width = image.width;
+        height = image.height;
+      } else {
+        image = el.video;
+        width = el.video.videoWidth;
+        height = el.video.videoHeight;
+      }
+      const codes = await state.detector.detectImage(image, width, height);
+      if (codes.length) {
+        state.lastCode = '';
+        onDetected(codes[0]);
+      } else {
+        showResult('bad', 'На фото код не найден',
+          'Поднесите код в рамку на 15–25 см, коснитесь экрана для фокуса и снимите ещё раз.');
+        feedback('dup', true);
+      }
+    } catch (error) {
+      showResult('bad', 'Не удалось сделать снимок', (error && error.message) || String(error));
+    } finally {
+      el.photoButton.disabled = false;
+    }
   }
 
   async function scanLoop() {
