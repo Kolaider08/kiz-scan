@@ -15,7 +15,8 @@
     name: 'kiz.name',
     typedName: 'kiz.typedName',
     queue: 'kiz.queue',
-    history: 'kiz.history'
+    history: 'kiz.history',
+    mode: 'kiz.mode'
   };
   const SCAN_INTERVAL = 140;     // мс между попытками распознать кадр
   const SAME_CODE_PAUSE = 2500;  // мс: тот же код в кадре не обрабатывается повторно
@@ -32,7 +33,8 @@
     cAdded: $('cAdded'), cDup: $('cDup'), cBad: $('cBad'), cQueue: $('cQueue'),
     nameRow: $('nameRow'), nameInput: $('nameInput'),
     manualInput: $('manualInput'), manualButton: $('manualButton'),
-    history: $('history')
+    history: $('history'),
+    modeCamera: $('modeCamera'), modeScanner: $('modeScanner')
   };
 
   const state = {
@@ -103,6 +105,22 @@
         submitManual();
       }
     });
+    el.modeCamera.addEventListener('click', () => setMode('camera'));
+    el.modeScanner.addEventListener('click', () => setMode('scanner'));
+    el.manualInput.addEventListener('blur', keepScannerFocus);
+    // Сканеры без Enter: полный КИЗ длинный, отправляем после короткой паузы.
+    let idleTimer = null;
+    el.manualInput.addEventListener('input', () => {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        if (el.manualInput.value.replace(/\s/g, '').length >= 60) submitManual();
+      }, 500);
+    });
+    document.addEventListener('click', event => {
+      if (state.mode === 'scanner' && !event.target.closest('input, button')) {
+        el.manualInput.focus();
+      }
+    });
     el.nameInput.value = load(STORE.typedName, '');
     el.nameInput.addEventListener('change', () => save(STORE.typedName, el.nameInput.value.trim()));
 
@@ -123,6 +141,44 @@
     }
 
     openApp();
+  }
+
+  // На компьютере (мышь, без сенсорного экрана) по умолчанию — ручной сканер.
+  function defaultMode() {
+    const desktop = !('ontouchstart' in window) &&
+      window.matchMedia && window.matchMedia('(pointer: fine)').matches;
+    return desktop ? 'scanner' : 'camera';
+  }
+
+  function setMode(mode) {
+    state.mode = mode === 'scanner' ? 'scanner' : 'camera';
+    save(STORE.mode, state.mode);
+    document.body.classList.toggle('scanner', state.mode === 'scanner');
+    el.modeCamera.setAttribute('aria-pressed', String(state.mode === 'camera'));
+    el.modeScanner.setAttribute('aria-pressed', String(state.mode === 'scanner'));
+
+    if (state.mode === 'scanner') {
+      stopCamera();
+      el.startOverlay.hidden = false;
+      el.pauseButton.hidden = true;
+      el.torchButton.hidden = true;
+      el.camera.classList.add('paused');
+      showResult('', 'Режим ручного сканера', 'Сканируйте коды подряд — каждый сохраняется сам.');
+      unlockAudio();
+      el.manualInput.focus();
+    } else {
+      showResult('', 'Готово к сканированию', 'Нажмите «Начать сканирование».');
+    }
+  }
+
+  function keepScannerFocus() {
+    if (state.mode !== 'scanner') return;
+    setTimeout(() => {
+      const active = document.activeElement;
+      if (state.mode === 'scanner' && (!active || !active.matches('input, button'))) {
+        el.manualInput.focus();
+      }
+    }, 150);
   }
 
   function history_replace() {
@@ -160,6 +216,7 @@
 
     const cached = load(STORE.name, null);
     applyIdentity(cached);
+    setMode(load(STORE.mode, '') || defaultMode());
 
     try {
       const answer = await api({api: 'hello'});

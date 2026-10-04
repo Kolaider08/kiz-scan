@@ -338,6 +338,63 @@
     .gate p { margin: 0; color: var(--muted); line-height: 1.5; text-align: center; }
     .gate .error { color: var(--bad); text-align: center; min-height: 20px; }
 
+
+    /* ---------- Режимы: камера / ручной сканер ---------- */
+    .modes {
+      display: flex;
+      gap: 0;
+      margin: 0;
+      background: #173c5e;
+    }
+
+    .modes button {
+      flex: 1;
+      padding: 10px 8px;
+      border: 0;
+      border-bottom: 3px solid transparent;
+      background: transparent;
+      color: #c9d6e2;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .modes button[aria-pressed="true"] {
+      color: #fff;
+      border-bottom-color: #ffd23f;
+    }
+
+    body.scanner .camera { display: none; }
+    body.scanner #manualRow input { font-size: 20px; padding: 16px; }
+    body.scanner #manualRow { margin-top: 12px; }
+    body.scanner main { max-width: 760px; margin: 0 auto; width: 100%; }
+    body:not(.scanner) .scanner-only { display: none; }
+
+    .scanner-hint {
+      margin: 0 0 8px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+
+    /* Компьютер: две колонки, крупный результат — видно со шага от стола. */
+    body.scanner .result h1 { font-size: 34px; }
+    body.scanner .result p { font-size: 16px; }
+    body.scanner .result { padding: 20px 22px; border-left-width: 12px; }
+
+    @media (min-width: 900px) {
+      body.scanner main {
+        display: flex;
+        gap: 28px;
+        max-width: 1200px;
+        align-items: flex-start;
+      }
+      body.scanner .col-left { flex: 1 1 0; min-width: 0; position: sticky; top: 0; }
+      body.scanner .col-right { flex: 1 1 0; min-width: 0; }
+      body.scanner .result h1 { font-size: 44px; }
+      body.scanner li { font-size: 14px; }
+    }
+
     @media (prefers-reduced-motion: reduce) {
       .laser { animation: none; }
     }
@@ -366,6 +423,11 @@
       <div class="net" id="net">онлайн</div>
     </header>
 
+    <nav class="modes" aria-label="Способ сканирования">
+      <button type="button" id="modeCamera" aria-pressed="true">📷 Камера</button>
+      <button type="button" id="modeScanner" aria-pressed="false">⌨ Ручной сканер</button>
+    </nav>
+
     <div class="camera paused" id="camera">
       <video id="video" playsinline muted></video>
       <div class="frame"><i></i><i></i><i></i><i></i><div class="laser"></div></div>
@@ -383,6 +445,7 @@
     </div>
 
     <main>
+      <div class="col-left">
       <div class="result" id="result" role="status" aria-live="polite">
         <h1 id="resultTitle">Готово к сканированию</h1>
         <p id="resultText">Нажмите «Начать сканирование».</p>
@@ -395,18 +458,25 @@
         <div>Очередь<b id="cQueue">0</b></div>
       </div>
 
+      <p class="scanner-hint scanner-only">Курсор всегда в поле ниже — просто сканируйте подряд.
+        Если сканер не отправляет Enter, код уйдёт сам через полсекунды.</p>
+
       <div class="manual" id="nameRow" hidden>
         <input id="nameInput" placeholder="Ваше имя" autocomplete="name">
       </div>
 
-      <div class="manual">
+      <div class="manual" id="manualRow">
         <input id="manualInput" placeholder="Ввод вручную или сканером" autocomplete="off"
                autocapitalize="off" spellcheck="false" enterkeyhint="send">
         <button class="btn" id="manualButton" type="button">ОК</button>
       </div>
 
+      </div>
+
+      <div class="col-right">
       <h2>Последние сканы</h2>
       <ol id="history"></ol>
+      </div>
     </main>
   </div>
 
